@@ -151,6 +151,69 @@ async function fetchLeetCodeUser(username) {
   };
 }
 
+async function fetchLeetCodeUserFromServer(username) {
+  const res = await fetch(`https://lcp-x95r.onrender.com/api/leetcode2/${username}`);
+  // const res = await fetch(`http://localhost:3001/api/leetcode2/${username}`);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(
+      err.error || `Request failed with ${res.status}`
+    );
+  }
+
+  const data = await res.json();
+
+  return {
+    username: data.username,
+
+    profile: {
+      realName:
+        data.profile?.realName || username,
+
+      avatar:
+        data.profile?.avatar || "",
+
+      ranking:
+        data.profile?.ranking ?? 0,
+
+      reputation:
+        data.profile?.reputation ?? 0,
+    },
+
+    solved: {
+      totalSolved:
+        data.solved?.totalSolved ?? 0,
+
+      easySolved:
+        data.solved?.easySolved ?? 0,
+
+      mediumSolved:
+        data.solved?.mediumSolved ?? 0,
+
+      hardSolved:
+        data.solved?.hardSolved ?? 0,
+    },
+
+    contest: {
+      rating:
+        data.contest?.rating ?? 0,
+
+      ratingDelta:
+        data.contest?.ratingDelta ?? 0,
+
+      globalRanking:
+        data.contest?.globalRanking ?? 0,
+
+      topPercentage:
+        data.contest?.topPercentage ?? 0,
+
+      badge:
+        data.contest?.badge ?? null,
+    },
+  };
+}
+
 async function mapWithConcurrency(items, limit, worker) {
   const results = [];
   let cursor = 0;
@@ -171,7 +234,7 @@ async function mapWithConcurrency(items, limit, worker) {
 async function fetchAllUsers(usernames) {
   const users = await mapWithConcurrency(usernames, 6, async (username) => {
     try {
-      return await fetchLeetCodeUser(username);
+      return await fetchLeetCodeUserFromServer(username);
     } catch (err) {
       console.warn(`Skipping LeetCode username "${username}".`, err);
       return null;
@@ -201,28 +264,64 @@ function readPreviousSnapshot() {
   }
 }
 
-function saveLeaderboardSnapshot(users) {
-  const ranked = rankForSnapshot(users);
-  const snapshot = {
-    savedAt: new Date().toISOString(),
-    users: Object.fromEntries(
-      ranked.map((user, index) => [
-        user.username,
-        {
-          rank: index + 1,
-          rating: Math.round(user.contest.rating || 0),
-          totalSolved: user.solved.totalSolved || 0,
-        },
-      ]),
-    ),
-  };
+// function shouldUpdateSnapshot(savedAt) {
+//   if (!savedAt) return true;
 
-  try {
-    localStorage.setItem(LEADERBOARD_SNAPSHOT_KEY, JSON.stringify(snapshot));
-  } catch {
-    // Snapshot history is optional and should never block the leaderboard.
-  }
-}
+//   const now = new Date();
+//   const lastSaved = new Date(savedAt);
+
+//   // Find most recent Thursday
+//   const recentThursday = new Date(now);
+
+//   const currentDay = now.getDay();
+
+//   // Thursday = 4
+//   const daysSinceThursday = (currentDay - 4 + 7) % 7;
+
+//   recentThursday.setDate(now.getDate() - daysSinceThursday);
+//   recentThursday.setHours(0, 0, 0, 0);
+
+//   // Update only if snapshot is older than recent Thursday
+//   return lastSaved < recentThursday;
+// }
+
+// function saveLeaderboardSnapshot(users) {
+//    try {
+//     const existing = localStorage.getItem(LEADERBOARD_SNAPSHOT_KEY);
+
+//     if (existing) {
+//       const parsed = JSON.parse(existing);
+
+//       if (!shouldUpdateSnapshot(parsed.savedAt)) {
+//         return;
+//       }
+//     }
+
+//     const ranked = rankForSnapshot(users);
+
+//     const snapshot = {
+//       savedAt: new Date().toISOString(),
+//       users: Object.fromEntries(
+//         ranked.map((user, index) => [
+//           user.username,
+//           {
+//             rank: index + 1,
+//             rating: Math.round(user.contest.rating || 0),
+//             totalSolved: user.solved.totalSolved || 0,
+//           },
+//         ])
+//       ),
+//     };
+
+//     localStorage.setItem(
+//       LEADERBOARD_SNAPSHOT_KEY,
+//       JSON.stringify(snapshot)
+//     );
+
+//   } catch {
+//     // ignore
+//   }
+// }
 
 function attachMovement(users, previousSnapshot) {
   const currentRanks = new Map(rankForSnapshot(users).map((user, index) => [user.username, index + 1]));
@@ -401,7 +500,7 @@ export default function LeetCodeDashboard() {
       if (!result.length) throw new Error("No valid LeetCode users were found from the sheet");
       setUsers(attachMovement(result, previousSnapshot));
       setLastUpdated(new Date());
-      saveLeaderboardSnapshot(result);
+      // saveLeaderboardSnapshot(result);
     } catch (err) {
       setError(err.message || "Failed to load leaderboard");
     } finally {
@@ -621,7 +720,9 @@ export default function LeetCodeDashboard() {
                       <Avatar user={user} />
                       <span>
                         <strong>{user.profile.realName || user.username}</strong>
-                        <small>@{user.username}</small>
+                        <a href={`https://leetcode.com/${user.username}`} style={{ textDecoration: "none", fontSize: "0.875rem", textTransform: "lowercase",color:'white' }} target="_blank" rel="noopener noreferrer">
+                          @{user.username}
+                        </a>
                       </span>
                     </td>
                     <td className="strong-cell">{formatNumber(user.solved.totalSolved)}</td>
@@ -630,7 +731,7 @@ export default function LeetCodeDashboard() {
                     <td className="hard">{formatNumber(user.solved.hardSolved)}</td>
                     <td className="contest-cell">
                       <span>{user.contest.rating ? Math.round(user.contest.rating) : "--"}</span>
-                      <RatingDelta value={user.movement?.ratingDelta} />
+                      <RatingDelta value={user.contest?.ratingDelta} />
                     </td>
                     <td>{user.profile.ranking ? `#${formatNumber(user.profile.ranking)}` : "--"}</td>
                     <td>
@@ -663,7 +764,7 @@ export default function LeetCodeDashboard() {
                       <span className="hard">{formatNumber(user.solved.hardSolved)} H</span>
                       <span className="mobile-rating">
                         {user.contest.rating ? `${Math.round(user.contest.rating)} rating` : "unrated"}
-                        <RatingDelta value={user.movement?.ratingDelta} />
+                        <RatingDelta value={user.contest?.ratingDelta} />
                       </span>
                     </div>
                   </article>
