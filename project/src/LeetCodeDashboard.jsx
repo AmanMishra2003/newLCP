@@ -1,12 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 
 const GQL = "/graphql";
-const SHEET_ID = import.meta.env.VITE_GOOGLE_SHEET_ID;
-const SHEET_GID = import.meta.env.VITE_GOOGLE_SHEET_GID || "0";
 const USERNAME_COLUMN_INDEX = Number(import.meta.env.VITE_USERNAME_COLUMN_INDEX || 0);
-const USERNAME_CACHE_KEY = "lc-ranker-sheet-usernames";
 const LEADERBOARD_SNAPSHOT_KEY = "lc-ranker-last-snapshot";
-const SHEET_CSV_URL = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/export?format=csv&gid=${SHEET_GID}`;
+const SHEETS = {
+  classmates: {
+    id: import.meta.env.VITE_GOOGLE_SHEET_ID,
+    gid: import.meta.env.VITE_GOOGLE_SHEET_GID || "0",
+    label: "Classmate leaderboard",
+    cacheKey: "lc-ranker-sheet-usernames",
+  },
+  juniors: {
+    id: import.meta.env.VITE_JUNIOR_GOOGLE_SHEET_ID,
+    gid: import.meta.env.VITE_JUNIOR_GOOGLE_SHEET_GID || "0",
+    label: "Junior leaderboard",
+    cacheKey: "lc-ranker-sheet-usernames-juniors",
+  },
+};
 
 function parseCsv(csv) {
   const rows = [];
@@ -56,40 +66,41 @@ function extractUsernamesFromCsv(csv, columnIndex = USERNAME_COLUMN_INDEX) {
     });
 }
 
-function readCachedUsernames() {
+function readCachedUsernames(cacheKey) {
   try {
-    const cached = JSON.parse(localStorage.getItem(USERNAME_CACHE_KEY) || "[]");
+    const cached = JSON.parse(localStorage.getItem(cacheKey) || "[]");
     return Array.isArray(cached) ? cached.filter(Boolean) : [];
   } catch {
     return [];
   }
 }
 
-function cacheUsernames(usernames) {
+function cacheUsernames(cacheKey, usernames) {
   try {
-    localStorage.setItem(USERNAME_CACHE_KEY, JSON.stringify(usernames));
+    localStorage.setItem(cacheKey, JSON.stringify(usernames));
   } catch {
     // Cache is a convenience fallback only.
   }
 }
 
-async function fetchSheetUsernames() {
-  if (!SHEET_ID) {
-    throw new Error("Missing VITE_GOOGLE_SHEET_ID in .env");
+async function fetchSheetUsernames(sheet) {
+  if (!sheet.id) {
+    throw new Error(`Missing Google Sheet configuration for ${sheet.label}`);
   }
 
   try {
-    const res = await fetch(SHEET_CSV_URL, { cache: "no-store" });
+    const sheetCsvUrl = `https://docs.google.com/spreadsheets/d/${sheet.id}/export?format=csv&gid=${sheet.gid}`;
+    const res = await fetch(sheetCsvUrl, { cache: "no-store" });
     if (!res.ok) throw new Error(`Sheet request failed with ${res.status}`);
 
     const csv = await res.text();
     const usernames = extractUsernamesFromCsv(csv);
-    if (!usernames.length) throw new Error("No usernames found in column A");
+    if (!usernames.length) throw new Error(`No usernames found for ${sheet.label}`);
 
-    cacheUsernames(usernames);
+    cacheUsernames(sheet.cacheKey, usernames);
     return { usernames, source: "sheet" };
   } catch (err) {
-    const cached = readCachedUsernames();
+    const cached = readCachedUsernames(sheet.cacheKey);
     if (cached.length) {
       console.warn("Could not fetch usernames from Google Sheet. Using cached sheet usernames.", err);
       return { usernames: cached, source: "cache" };
@@ -348,6 +359,10 @@ function formatNumber(value) {
   return number.toLocaleString();
 }
 
+function csvCell(value) {
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
 function initialsFor(name) {
   return (
     (name || "")
@@ -470,7 +485,8 @@ function MetricCard({ label, value, detail, tone }) {
   );
 }
 
-export default function LeetCodeDashboard() {
+export default function LeetCodeDashboard({ page = "classmates", onPageChange }) {
+  const sheet = SHEETS[page] || SHEETS.classmates;
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -493,7 +509,7 @@ export default function LeetCodeDashboard() {
     setError(null);
     try {
       const previousSnapshot = readPreviousSnapshot();
-      const { usernames, source } = await fetchSheetUsernames();
+      const { usernames, source } = await fetchSheetUsernames(sheet);
       setSheetSource(source);
       setSheetUsernameCount(usernames.length);
       const result = await fetchAllUsers(usernames);
@@ -511,7 +527,9 @@ export default function LeetCodeDashboard() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     loadUsers();
-  }, []);
+    // loadUsers is intentionally recreated with the selected sheet; page is the reload trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   useEffect(() => {
     try {
@@ -571,6 +589,42 @@ export default function LeetCodeDashboard() {
     setSortDir(key === "username" || key === "ranking" ? "asc" : "desc");
   }
 
+  function exportCsv() {
+    const headers = [
+      "Rank",
+      "Name",
+      "Username",
+      "Solved",
+      "Easy",
+      "Medium",
+      "Hard",
+      "Contest Rating",
+      "Global Ranking",
+      "Badge",
+      "LeetCode Profile",
+    ];
+    const rows = filteredUsers.map((user) => [
+      rankedUsers.findIndex((item) => item.username === user.username) + 1,
+      user.profile.realName || user.username,
+      user.username,
+      user.solved.totalSolved,
+      user.solved.easySolved,
+      user.solved.mediumSolved,
+      user.solved.hardSolved,
+      user.contest.rating ? Math.round(user.contest.rating) : "",
+      user.profile.ranking || "",
+      user.contest.badge || "",
+      `https://leetcode.com/${user.username}`,
+    ]);
+    const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `leetcode-${page}-details.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   const columns = [
     ["rank", "Rank"],
     ["username", "Coder"],
@@ -594,6 +648,22 @@ export default function LeetCodeDashboard() {
             </span>
           </a>
           <div className="topbar-actions">
+            <div className="page-switcher" aria-label="Leaderboard pages">
+              <button
+                className={page === "classmates" ? "active" : ""}
+                type="button"
+                onClick={() => onPageChange?.("classmates")}
+              >
+                Classmates
+              </button>
+              <button
+                className={page === "juniors" ? "active" : ""}
+                type="button"
+                onClick={() => onPageChange?.("juniors")}
+              >
+                Juniors
+              </button>
+            </div>
             <button className="icon-button" type="button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
               {theme === "dark" ? "Light" : "Dark"}
             </button>
@@ -605,7 +675,7 @@ export default function LeetCodeDashboard() {
 
         <div className="hero-grid">
           <div className="hero-copy">
-            <p className="eyebrow">Live LeetCode standings</p>
+            <p className="eyebrow">Live {sheet.label.toLowerCase()}</p>
             <h1>Rank coders by solved count, contest rating, and consistency.</h1>
             <p className="hero-subtitle">
               Search the cohort, sort any metric, and spot the top performers without digging through profiles.
@@ -676,6 +746,9 @@ export default function LeetCodeDashboard() {
             <Badge tone="easy">{formatNumber(totals.easy)} easy</Badge>
             <Badge tone="medium">{formatNumber(totals.medium)} medium</Badge>
             <Badge tone="hard">{formatNumber(totals.hard)} hard</Badge>
+            <button className="export-button" type="button" onClick={exportCsv} disabled={loading || !filteredUsers.length}>
+              Export CSV
+            </button>
           </div>
         </div>
 
